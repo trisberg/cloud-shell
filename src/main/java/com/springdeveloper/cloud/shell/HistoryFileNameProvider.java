@@ -14,10 +14,4 @@ public class HistoryFileNameProvider extends DefaultHistoryFileNameProvider {
 	public String getHistoryFileName() {
 		return "cloud-shell.log";
 	}
-
-	@Override
-	public String name() {
-		return "Cloud Shell";
-	}
-
 }

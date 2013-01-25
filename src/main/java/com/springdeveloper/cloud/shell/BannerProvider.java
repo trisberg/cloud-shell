@@ -40,6 +40,6 @@ public class BannerProvider extends DefaultBannerProvider
 
 	@Override
 	public String name() {
-		return "Cloud Shell";
+		return "Cloud Shell " + CloudFoundryCommands.VERSION + " using Spring Shell";
 	}
 }
