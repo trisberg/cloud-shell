@@ -9,6 +9,8 @@ import org.cloudfoundry.client.lib.domain.CloudApplication;
 import org.cloudfoundry.client.lib.domain.CloudInfo;
 import org.cloudfoundry.client.lib.domain.CloudService;
 import org.cloudfoundry.client.lib.domain.CloudSpace;
+import org.cloudfoundry.client.lib.domain.InstanceInfo;
+import org.cloudfoundry.client.lib.domain.InstancesInfo;
 import org.cloudfoundry.client.lib.domain.Staging;
 import org.springframework.shell.core.CommandMarker;
 import org.springframework.shell.core.annotation.CliAvailabilityIndicator;
@@ -21,6 +23,7 @@ import java.net.MalformedURLException;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  */
@@ -48,8 +51,9 @@ public class CloudFoundryCommands implements CommandMarker {
 		}
 	}
 
-	@CliAvailabilityIndicator({"cf logout", "cf apps", "cf push", "cf start", "cf stop", "cf delete", "cf restlog",
-							"cf services", "cf map", "cf unmap",
+	@CliAvailabilityIndicator({"cf logout", "cf apps", "cf push", "cf start", "cf stop", "cf delete-app", "cf restlog",
+							"cf stats", "cf scale", "cf env", "cf set-env",
+							"cf logs", "cf crashlogs", "cf services", "cf map", "cf unmap",
 							"cf create-service", "cf delete-service", "cf bind-service", "cf unbind-service"})
 	public boolean isLoggedIn() {
 		if (client != null) {
@@ -134,10 +138,10 @@ public class CloudFoundryCommands implements CommandMarker {
 			return "Error while connecting to " + target + " :: " + e.getMessage();
 		}
 		if (sessionSpace != null) {
-			return "Connected to " + target + " using " + user + " :: " + passwd + " org/space: " +
+			return "Connected to " + target + " using org/space: " +
 					sessionSpace.getOrganization().getName() + "/" + sessionSpace.getName();
 		} else {
-			return "Connected to " + target + " using " + user + " :: " + passwd;
+			return "Connected to " + target;
 		}
 	}
 
@@ -187,9 +191,9 @@ public class CloudFoundryCommands implements CommandMarker {
 		return svcList;
 	}
 
-	@CliCommand(value = "cf delete", help = "Delete an app")
+	@CliCommand(value = "cf delete-app", help = "Delete an app")
 	public String delete(
-			@CliOption(key = { "name" }, help = "The app name", mandatory = true) final String name) {
+			@CliOption(key = { "app" }, help = "The app name", mandatory = true) final String name) {
 		try {
 			this.client.deleteApplication(name);
 		} catch (Exception e) {
@@ -200,7 +204,7 @@ public class CloudFoundryCommands implements CommandMarker {
 
 	@CliCommand(value = "cf start", help = "Start an app")
 	public String start(
-			@CliOption(key = { "name" }, help = "The app name", mandatory = true) final String name) {
+			@CliOption(key = { "app" }, help = "The app name", mandatory = true) final String name) {
 		try {
 			this.client.startApplication(name);
 		} catch (Exception e) {
@@ -211,7 +215,7 @@ public class CloudFoundryCommands implements CommandMarker {
 
 	@CliCommand(value = "cf stop", help = "Stop an app")
 	public String stop(
-			@CliOption(key = { "name" }, help = "The app name", mandatory = true) final String name) {
+			@CliOption(key = { "app" }, help = "The app name", mandatory = true) final String name) {
 		try {
 			this.client.stopApplication(name);
 		} catch (Exception e) {
@@ -242,7 +246,7 @@ public class CloudFoundryCommands implements CommandMarker {
 
 	@CliCommand(value = "cf map", help = "Map a uri to an app")
 	public String map(
-			@CliOption(key = { "name" }, help = "The app name", mandatory = true) final String name,
+			@CliOption(key = { "app" }, help = "The app name", mandatory = true) final String name,
 			@CliOption(key = { "uri" }, help = "The app uri to map", mandatory = true) final String uri) {
 		try {
 			List<String> uris = new ArrayList<String>(this.client.getApplication(name).getUris());
@@ -258,7 +262,7 @@ public class CloudFoundryCommands implements CommandMarker {
 
 	@CliCommand(value = "cf unmap", help = "Unmap a uri from an app")
 	public String unmap(
-			@CliOption(key = { "name" }, help = "The app name", mandatory = true) final String name,
+			@CliOption(key = { "app" }, help = "The app name", mandatory = true) final String name,
 			@CliOption(key = { "uri" }, help = "The app uri to un-map", mandatory = true) final String uri) {
 		try {
 			List<String> uris = new ArrayList<String>(this.client.getApplication(name).getUris());
@@ -306,7 +310,7 @@ public class CloudFoundryCommands implements CommandMarker {
 
 	@CliCommand(value = "cf delete-service", help = "Delete a service")
 	public String deleteService(
-			@CliOption(key = { "name" }, help = "The service name", mandatory = true) final String name) {
+			@CliOption(key = { "service" }, help = "The service name", mandatory = true) final String name) {
 		try {
 			this.client.deleteService(name);
 		} catch (Exception e) {
@@ -349,8 +353,150 @@ public class CloudFoundryCommands implements CommandMarker {
 		return "Service un-bound.";
 	}
 
+	@CliCommand(value = "cf stats", help = "Print app status")
+	public String stats(
+		@CliOption(key = { "app" }, mandatory = true, help = "app name") final String name) {
+		StringBuilder status = new StringBuilder();
+		try {
+			CloudApplication app = this.client.getApplication(name);
+			InstancesInfo instancesInfo = this.client.getApplicationInstances(name);
+			status.append(app.getName() + " :: ");
+			status.append(app.getState() + "\n");
+			status.append(app.getInstances() + " x ");
+			status.append(app.getMemory() + "MB [");
+			status.append(app.getPlan() + "]" + "\n");
+			status.append("URIs: " + app.getUris() + "\n");
+			status.append("Services: " + app.getServices());
+			if (instancesInfo.getInstances().size() > 0) {
+				status.append("\nInstances: ");
+				for (InstanceInfo inst : instancesInfo.getInstances()) {
+					status.append("\n");
+					status.append(inst.getIndex() + ": ");
+					status.append(inst.getState() + " since ");
+					status.append(inst.getSince());
+				}
+			}
+		} catch (Exception e) {
+			return getClientError(e, "Error while getting status for " + name + " on " + target);
+		}
+		return status.toString();
+	}
+
+	@CliCommand(value = "cf scale", help = "Scale app")
+	public String scale(
+		@CliOption(key = { "app" }, mandatory = true, help = "app name") final String name,
+		@CliOption(key = { "instances" }, mandatory = false, help = "app instances") final Integer instances,
+		@CliOption(key = { "memory" }, mandatory = false, help = "app memory") final Integer memory,
+		@CliOption(key = { "plan" }, mandatory = false, help = "app plan") final String plan) {
+		try {
+			CloudApplication app = this.client.getApplication(name);
+			if (plan != null) {
+				this.client.updateApplicationPlan(name, plan);
+			}
+			if (memory != null) {
+				this.client.updateApplicationMemory(name, memory);
+			}
+			if (instances != null) {
+				this.client.updateApplicationInstances(name, instances);
+			}
+		} catch (Exception e) {
+			return getClientError(e, "Error while scaling " + name + " on " + target);
+		}
+		return "Scaling complete.";
+	}
+
+	@CliCommand(value = "cf env", help = "Print app environment variables")
+	public String env(
+		@CliOption(key = { "app" }, mandatory = true, help = "app name") final String name) {
+		StringBuilder envOutput = new StringBuilder();
+		try {
+			CloudApplication app = this.client.getApplication(name);
+			for (String var : app.getEnvAsMap().keySet()) {
+				if (envOutput.length() > 0) {
+					envOutput.append("\n");
+				}
+				envOutput.append(var + " = ");
+				envOutput.append(app.getEnvAsMap().get(var));
+			}
+		} catch (Exception e) {
+			return getClientError(e, "Error while getting environment for " + name + " on " + target);
+		}
+		return envOutput.toString();
+	}
+
+	@CliCommand(value = "cf set-env", help = "Set app environment variables")
+	public String setEnv(
+		@CliOption(key = { "app" }, mandatory = true, help = "app name") final String appName,
+		@CliOption(key = { "name" }, mandatory = true, help = "app name") final String name,
+		@CliOption(key = { "value" }, mandatory = false, help = "app name") final String value) {
+		try {
+			CloudApplication app = this.client.getApplication(appName);
+			Map<String, String> env = app.getEnvAsMap();
+			if (value == null || value.length() == 0) {
+				env.remove(name);
+			} else {
+				env.put(name, value);
+			}
+			this.client.updateApplicationEnv(appName, env);
+
+		} catch (Exception e) {
+			return getClientError(e, "Error while updating environment for " + name + " on " + target);
+		}
+		if (value == null || value.length() == 0) {
+			return "Environment variable un-set.";
+		} else {
+			return "Environment variable set.";
+		}
+	}
+
+	@CliCommand(value = "cf logs", help = "Print app logs")
+	public String logs(
+		@CliOption(key = { "app" }, mandatory = true, help = "app name") final String name) {
+		StringBuilder logOutput = new StringBuilder();
+		try {
+			Map<String, String> logs = this.client.getLogs(name);
+			if (logs != null && logs.size() > 0) {
+				for (String log : logs.keySet()) {
+					if (logOutput.length() > 0) {
+						logOutput.append("\n");
+					}
+					logOutput.append(log + ":\n");
+					logOutput.append(logs.get(log));
+				}
+			} else {
+				logOutput.append("No logs found.");
+			}
+		} catch (Exception e) {
+			return getClientError(e, "Error while getting logs for " + name + " on " + target);
+		}
+		return logOutput.toString();
+	}
+
+	@CliCommand(value = "cf crashlogs", help = "Print app crash logs")
+	public String crashlogs(
+		@CliOption(key = { "app" }, mandatory = true, help = "app name") final String name) {
+		StringBuilder logOutput = new StringBuilder();
+		try {
+			Map<String, String> logs = this.client.getCrashLogs(name);
+			if (logs != null && logs.size() > 0) {
+				for (String log : logs.keySet()) {
+					if (logOutput.length() > 0) {
+						logOutput.append("\n");
+					}
+					logOutput.append(log + ":\n");
+					logOutput.append(logs.get(log));
+				}
+			} else {
+				logOutput.append("No crashlogs found.");
+			}
+		} catch (Exception e) {
+			return getClientError(e, "Error while getting crash logs for " + name + " on " + target);
+		}
+		return logOutput.toString();
+	}
+
 	@CliCommand(value = "cf restlog", help = "Print or clear REST logs")
-	public String restlogs(
+	public String restlog(
 		@CliOption(key = { "print" }, mandatory = false, help = "Print log entries", unspecifiedDefaultValue = "true") final boolean print,
 		@CliOption(key = { "clear" }, mandatory = false, help = "Clear log entries", unspecifiedDefaultValue = "false") final boolean clear) {
 		StringBuilder logOutput = new StringBuilder();
@@ -376,7 +522,7 @@ public class CloudFoundryCommands implements CommandMarker {
 			return  errorText + " :: " + e.getMessage() +
 					" (" + ((CloudFoundryException)e).getDescription() + ")";
 		} else {
-			return errorText + e.getMessage();
+			return errorText + " (" + (e.getMessage() == null ? e.getClass().getName() : e.getMessage()) + ")";
 		}
 	}
 
