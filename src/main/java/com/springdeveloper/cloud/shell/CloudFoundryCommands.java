@@ -17,8 +17,13 @@ import org.springframework.shell.core.annotation.CliAvailabilityIndicator;
 import org.springframework.shell.core.annotation.CliCommand;
 import org.springframework.shell.core.annotation.CliOption;
 import org.springframework.stereotype.Component;
+import org.springframework.util.Assert;
+import org.yaml.snakeyaml.Yaml;
 
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileReader;
+import java.io.Reader;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.util.ArrayList;
@@ -51,8 +56,8 @@ public class CloudFoundryCommands implements CommandMarker {
 		}
 	}
 
-	@CliAvailabilityIndicator({"cf logout", "cf apps", "cf push", "cf start", "cf stop", "cf delete-app", "cf restlog",
-							"cf stats", "cf scale", "cf env", "cf set-env",
+	@CliAvailabilityIndicator({"cf logout", "cf apps", "cf push-app", "cf start", "cf stop", "cf delete-app", "cf restlog",
+							"cf push-manifest", "cf delete-manifest", "cf stats", "cf scale", "cf env", "cf set-env",
 							"cf logs", "cf crashlogs", "cf services", "cf map", "cf unmap",
 							"cf create-service", "cf delete-service", "cf bind-service", "cf unbind-service"})
 	public boolean isLoggedIn() {
@@ -97,12 +102,14 @@ public class CloudFoundryCommands implements CommandMarker {
 	@CliCommand(value = "cf login", help = "Log-in to a cloud provider")
 	public String login(
 		@CliOption(key = { "email" }, mandatory = true, help = "User email") final String user,
-		@CliOption(key = { "password" }, mandatory = true, help = "Password") final String passwd,
+		@CliOption(key = { "password" }, mandatory = false, help = "Password") final String passwd,
 		@CliOption(key = { "org" }, mandatory = false,
 				help = "The org to target") final String org,
 		@CliOption(key = { "space" }, mandatory = false, unspecifiedDefaultValue = "development",
 				help = "The space to target") final String space){
-		CloudCredentials credentials = new CloudCredentials(user, passwd);
+		String cloudPwd = passwd == null ? System.getenv("CLOUDPWD") : passwd;
+		Assert.notNull(cloudPwd, "Password is required.");
+		CloudCredentials credentials = new CloudCredentials(user, cloudPwd);
 		CloudSpace sessionSpace = null;
 		try {
 			this.client = new CloudFoundryClient(credentials, new URL(target));
@@ -224,7 +231,7 @@ public class CloudFoundryCommands implements CommandMarker {
 		return "App stopped.";
 	}
 
-	@CliCommand(value = "cf push", help = "Push an app")
+	@CliCommand(value = "cf push-app", help = "Push an app")
 	public String push(
 			@CliOption(key = { "", "file" }, help = "The app file to push", mandatory = true) final File app,
 			@CliOption(key = { "name" }, help = "The app name", mandatory = true) final String name,
@@ -242,6 +249,112 @@ public class CloudFoundryCommands implements CommandMarker {
 			return getClientError(e, "Error while pushing app to " + target);
 		}
 		return "App deployed.";
+	}
+
+	@CliCommand(value = "cf push-manifest", help = "Load and push manifest entries for aggregate apps")
+	public String pushManifest(
+			@CliOption(key = { "", "file" }, help = "The manifest file", mandatory = true) final File file) {
+		try {
+			Yaml yaml = new Yaml();
+			Reader reader = new FileReader(file);
+			Map<String, Object> manifestMap = (Map) yaml.load(reader);
+			List<Map<String, Object>> svcMaps = (List) manifestMap.get("services");
+			List<Map<String, Object>> appMaps = (List) manifestMap.get("applications");
+			for (Map<String, Object> svcMap : svcMaps) {
+				CloudService svc = null;
+				try {
+					svc = this.client.getService((String)svcMap.get("name"));
+				} catch (Exception e) {}
+				if (svc == null) {
+					System.out.println("Creating service " + svcMap);;
+					doCreateService((String)svcMap.get("name"),
+							(String)svcMap.get("label"),
+							(String)svcMap.get("plan"),
+							(String)svcMap.get("version"));
+				}
+			}
+			for (Map<String, Object> appMap : appMaps) {
+				CloudApplication app = null;
+				try {
+					app = this.client.getApplication((String)appMap.get("name"));
+				} catch (Exception e) {}
+				if (app == null) {
+					System.out.println("Creating app " + appMap);
+					Staging staging = new Staging((String)appMap.get("runtime"), (String)appMap.get("framework"));
+					List<String> urls = new ArrayList<String>((List)appMap.get("urls"));
+					List<String> services = new ArrayList<String>((List)appMap.get("services"));
+					String mem = (String)appMap.get("memory");
+					if (mem.contains("M")) {
+						mem = mem.substring(0, mem.indexOf("M"));
+					}
+					this.client.createApplication((String)appMap.get("name"),
+							staging,
+							Integer.valueOf(mem),
+							urls,
+							services,
+							(String)appMap.get("plan"));
+					String appPath = (String)appMap.get("path");
+					if (!appPath.startsWith("/")) {
+						appPath = file.getParent() + "/" + appPath;
+					}
+					this.client.uploadApplication((String)appMap.get("name"), new File(appPath));
+					this.client.updateApplicationInstances((String)appMap.get("name"), (Integer)appMap.get("instances"));
+					this.client.startApplication((String)appMap.get("name"));
+				}
+			}
+		} catch (Exception e) {
+			return getClientError(e, "Error while processing manifest");
+		}
+		return "Manifest push completed.";
+	}
+
+	@CliCommand(value = "cf delete-manifest", help = "Load and delete manifest entries for aggregate apps")
+	public String deleteManifest(
+			@CliOption(key = { "", "file" }, help = "The manifest file", mandatory = true) final File file,
+			@CliOption(key = { "deleteServices" }, help = "Delete services listed in the manifest file",
+					mandatory = false, specifiedDefaultValue = "true", unspecifiedDefaultValue = "false")
+					final Boolean deleteServices) {
+		try {
+			Yaml yaml = new Yaml();
+			Reader reader = new FileReader(file);
+			Map<String, Object> manifestMap = (Map) yaml.load(reader);
+			List<Map<String, Object>> appMaps = (List) manifestMap.get("applications");
+			for (Map<String, Object> appMap : appMaps) {
+				CloudApplication app = null;
+				try {
+					app = this.client.getApplication((String)appMap.get("name"));
+				} catch (Exception e) {}
+				if (app != null) {
+					System.out.println("Deleting app " + appMap.get("name"));
+					this.client.stopApplication((String)appMap.get("name"));
+					this.client.deleteApplication((String)appMap.get("name"));
+				}
+			}
+			if (deleteServices) {
+				List<Map<String, Object>> svcMaps = (List) manifestMap.get("services");
+				for (Map<String, Object> svcMap : svcMaps) {
+					CloudService svc = null;
+					try {
+						svc = this.client.getService((String)svcMap.get("name"));
+					} catch (Exception e) {}
+					if (svc != null) {
+						System.out.println("Deleting service " + svcMap.get("name"));;
+						this.client.deleteService((String)svcMap.get("name"));
+					}
+				}
+			}
+		} catch (Exception e) {
+			return getClientError(e, "Error while processing manifest");
+		}
+		return "Manifest delete completed.";
+	}
+
+	private String repeat(char c, int times) {
+		char[] buffer = new char[times];
+		for (int i = 0; i < times; i++) {
+			buffer[i] = c;
+		}
+		return String.valueOf(buffer);
 	}
 
 	@CliCommand(value = "cf map", help = "Map a uri to an app")
@@ -285,27 +398,31 @@ public class CloudFoundryCommands implements CommandMarker {
 			@CliOption(key = { "plan" }, help = "The service plan", mandatory = false) final String plan,
 			@CliOption(key = { "version" }, help = "The service version", mandatory = true) final String version) {
 		try {
-			CloudService service = new CloudService(CloudService.Meta.defaultMeta(), name);
-			if (v1) {
-				service.setTier("free");
-				service.setType("database");
-				if (version != null) {
-					service.setVersion(version);
-				}
-				service.setVendor(offering);
-			} else {
-				service.setProvider("core");
-				service.setLabel(offering);
-				if (version != null) {
-					service.setVersion(version);
-				}
-				service.setPlan(plan == null ? "100" : plan);
-			}
-			this.client.createService(service);
+			doCreateService(name, offering, plan, version);
 		} catch (Exception e) {
 			return getClientError(e, "Error while creating service of type " + offering + " on " + target);
 		}
 		return "Service created.";
+	}
+
+	private void doCreateService(String name, String offering, String plan, String version) {
+		CloudService service = new CloudService(CloudService.Meta.defaultMeta(), name);
+		if (v1) {
+			service.setTier("free");
+			service.setType("database");
+			if (version != null) {
+				service.setVersion(version);
+			}
+			service.setVendor(offering);
+		} else {
+			service.setProvider("core");
+			service.setLabel(offering);
+			if (version != null) {
+				service.setVersion(version);
+			}
+			service.setPlan(plan == null ? "100" : plan);
+		}
+		this.client.createService(service);
 	}
 
 	@CliCommand(value = "cf delete-service", help = "Delete a service")
